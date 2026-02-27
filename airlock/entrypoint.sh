@@ -93,5 +93,8 @@ if [ ! -f /tmp/.network-ready ]; then
     exit 1
 fi
 
-echo "Network ready. Starting Claude Code..."
-exec claude --dangerously-skip-permissions "$@"
+# AIRLOCK_AI_COMMAND is passed as env var by airlock-launch.sh
+AI_CMD="${AIRLOCK_AI_COMMAND:-claude --dangerously-skip-permissions}"
+echo "Network ready. Starting: $AI_CMD"
+# shellcheck disable=SC2086
+exec $AI_CMD "$@"

@@ -221,6 +221,7 @@ docker run -dit \
     $ENHANCE_FLAGS \
     $PORT_FLAGS \
     $AUTH_ENV_FLAGS \
+    -e "AIRLOCK_AI_COMMAND=$AIRLOCK_AI_COMMAND" \
     -e "AIRLOCK_ENHANCEMENTS=$ENHANCE_NAMES" \
     --label "airlock.session=$SESSION_ID" \
     --label "airlock.project=$PROJECT_PATH" \

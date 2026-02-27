@@ -93,12 +93,13 @@ else
     echo "  OK: /workspace/project exists"
 fi
 
-# Check 4: claude binary on PATH
-if ! docker run --rm --entrypoint="" "$IMAGE_NAME" which claude >/dev/null 2>&1; then
-    echo "  FAIL: 'claude' not found on PATH" >&2
+# Check 4: AI binary on PATH
+AI_BINARY="${AIRLOCK_AI_COMMAND%% *}"  # first word of command
+if ! docker run --rm --entrypoint="" "$IMAGE_NAME" which "$AI_BINARY" >/dev/null 2>&1; then
+    echo "  FAIL: '$AI_BINARY' not found on PATH" >&2
     ERRORS=$((ERRORS + 1))
 else
-    echo "  OK: claude binary on PATH"
+    echo "  OK: $AI_BINARY binary on PATH"
 fi
 
 # ── Allowed signers check ─────────────────────────────────────────────
