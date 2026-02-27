@@ -1,0 +1,128 @@
+# Dockerfile.base — Airlock base image
+# Full-stack development environment: Python 3.12 data/web stack, Node.js 22,
+# full CLI toolchain, database clients. Batteries-included base image for CodeSafe Airlock.
+#
+# Satisfies the Airlock 5-point image contract.
+
+FROM ubuntu:24.04@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV LANG=C.UTF-8
+ENV LC_ALL=C.UTF-8
+
+# ══════════════════════════════════════════════════════════════════════
+# Layer 1: System packages + Node.js 22 LTS
+# ══════════════════════════════════════════════════════════════════════
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        # Core
+        ca-certificates curl wget gnupg openssh-client \
+        # Version control
+        git \
+        # Build tools
+        build-essential make cmake pkg-config \
+        libssl-dev libffi-dev \
+        # Python runtime
+        python3 python3-pip python3-venv python3-dev \
+        # Database clients
+        postgresql-client redis-tools \
+        # CLI tools you reach for
+        jq tree htop tmux vim-tiny \
+        ripgrep fd-find \
+        # XML/HTML parsing deps (for lxml, beautifulsoup)
+        libxml2-dev libxslt1-dev \
+        # Misc libs
+        zlib1g-dev libbz2-dev libreadline-dev libsqlite3-dev \
+    # Node.js 22 LTS
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    # Claude Code
+    && npm install -g @anthropic-ai/claude-code \
+    # Node dev tools (global)
+    && npm install -g typescript tsx eslint prettier \
+    # Cleanup
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Alias fd-find to fd (Ubuntu ships it as fdfind)
+RUN ln -sf /usr/bin/fdfind /usr/local/bin/fd
+
+# ══════════════════════════════════════════════════════════════════════
+# Layer 2: Python ecosystem (isolated venv, symlinked to PATH)
+# ══════════════════════════════════════════════════════════════════════
+
+# -- Quality tools --
+RUN python3 -m venv /opt/pytools \
+    && /opt/pytools/bin/pip install --no-cache-dir \
+        black ruff mypy pytest semgrep bandit
+
+# -- Web/API stack --
+RUN /opt/pytools/bin/pip install --no-cache-dir \
+        fastapi uvicorn pydantic pydantic-settings \
+        httpx requests aiohttp \
+        python-dotenv
+
+# -- Data/scraping stack --
+RUN /opt/pytools/bin/pip install --no-cache-dir \
+        pandas beautifulsoup4 lxml feedparser \
+        scikit-learn
+
+# -- Utilities --
+RUN /opt/pytools/bin/pip install --no-cache-dir \
+        redis click loguru jinja2 \
+        pyjwt cryptography
+
+# Symlink all tools to PATH
+RUN for bin in \
+        black ruff mypy pytest semgrep bandit \
+        uvicorn fastapi \
+        python ipython; do \
+        [ -f "/opt/pytools/bin/$bin" ] && ln -sf "/opt/pytools/bin/$bin" "/usr/local/bin/$bin"; \
+    done; true
+
+# Make the venv available for project imports too
+ENV VIRTUAL_ENV=/opt/pytools
+ENV PATH="/opt/pytools/bin:$PATH"
+
+# ══════════════════════════════════════════════════════════════════════
+# Layer 3: User + workspace (airlock contract)
+# ══════════════════════════════════════════════════════════════════════
+
+# UID 1000 may already exist as 'ubuntu' in base image
+RUN if id -u 1000 >/dev/null 2>&1; then \
+        existing=$(getent passwd 1000 | cut -d: -f1); \
+        usermod -l claude -d /home/claude -m "$existing"; \
+        groupmod -n claude "$(id -gn 1000)"; \
+    else \
+        useradd -m -u 1000 -s /bin/bash claude; \
+    fi
+
+# Bash audit logging (G6 forensics)
+RUN echo 'export HISTFILE=/tmp/audit.log' >> /home/claude/.bashrc \
+    && echo 'export HISTTIMEFORMAT="%F %T "' >> /home/claude/.bashrc \
+    && echo 'shopt -s histappend' >> /home/claude/.bashrc \
+    && echo 'export PROMPT_COMMAND="history -a"' >> /home/claude/.bashrc
+
+# Useful aliases
+RUN echo 'alias ll="ls -alF"' >> /home/claude/.bashrc \
+    && echo 'alias la="ls -A"' >> /home/claude/.bashrc \
+    && echo 'alias l="ls -CF"' >> /home/claude/.bashrc \
+    && echo 'alias rg="rg --smart-case"' >> /home/claude/.bashrc
+
+# Workspace + credentials dir
+RUN mkdir -p /workspace/project && chown -R claude:claude /workspace
+RUN mkdir -p /home/claude/.claude && chown -R claude:claude /home/claude/.claude
+
+# ══════════════════════════════════════════════════════════════════════
+# Entrypoint (airlock contract)
+# ══════════════════════════════════════════════════════════════════════
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER claude
+WORKDIR /workspace/project
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

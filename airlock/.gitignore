@@ -1,0 +1,29 @@
+# Secrets and credentials — never commit
+*.pem
+*.key
+.env
+.env.*
+
+# Airlock state (lives in ~/.airlock/ but just in case)
+image-hash.txt
+allowed_signers
+sessions/
+allowlists/
+enhancements/
+hashes/
+
+# Personal Dockerfiles
+Dockerfile.personal
+Dockerfile.local
+
+# Analysis docs (not for public repo)
+Airlock-*.md
+Older Versions/
+
+# OS / editor
+.DS_Store
+*.swp
+*.swo
+*~
+.vscode/
+.idea/

@@ -1,0 +1,55 @@
+# Dockerfile.example — Minimal Airlock-compatible image template
+#
+# IMAGE CONTRACT (all 5 points must be satisfied):
+#   1. User "claude" exists with UID 1000
+#   2. /workspace/project directory exists (owned by claude)
+#   3. entrypoint.sh is copied and set as ENTRYPOINT
+#   4. Entrypoint touches /tmp/.key-loaded as readiness signal
+#   5. Entrypoint execs "claude --dangerously-skip-permissions"
+#
+# Authentication is handled via mounted credentials, not baked into the image.
+# The host's ~/.claude/.credentials.json is bind-mounted read-only at runtime.
+
+FROM ubuntu:24.04@sha256:d1e2e92c075e5ca139d51a140fff46f84315c0fdce203eab2807c7e495eff4f9
+
+# Avoid interactive prompts during build
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install Node.js LTS and Claude Code
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
+        gnupg \
+    && mkdir -p /etc/apt/keyrings \
+    && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
+    && echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_22.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends nodejs \
+    && npm install -g @anthropic-ai/claude-code \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user (UID 1000 may already exist as 'ubuntu' in base image)
+RUN if id -u 1000 >/dev/null 2>&1; then \
+        existing=$(getent passwd 1000 | cut -d: -f1); \
+        usermod -l claude -d /home/claude -m "$existing"; \
+        groupmod -n claude "$(id -gn 1000)"; \
+    else \
+        useradd -m -u 1000 -s /bin/bash claude; \
+    fi
+
+# Create workspace
+RUN mkdir -p /workspace/project && chown -R claude:claude /workspace
+
+# Create credentials directory structure
+RUN mkdir -p /home/claude/.claude && chown -R claude:claude /home/claude/.claude
+
+# Copy entrypoint
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod +x /usr/local/bin/entrypoint.sh
+
+USER claude
+WORKDIR /workspace/project
+
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
