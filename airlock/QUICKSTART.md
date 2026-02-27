@@ -1,12 +1,14 @@
 # Airlock Quickstart
 
-Get from zero to a sandboxed Claude Code session in 5 minutes.
+Get from zero to a sandboxed AI coding session in 5 minutes.
 
 ## Prerequisites
 
 - **Docker** installed and running (`docker run --rm hello-world` should work)
 - **sudo access** (needed for network firewall rules)
-- **Claude Code credentials** (`~/.claude/.credentials.json`) — run `claude` on the host and complete the OAuth login if you don't have this yet
+- **Authentication** — one of:
+  - **OAuth credentials** (`~/.claude/.credentials.json`) — run `claude` on the host and complete the login flow
+  - **API key** — `export ANTHROPIC_API_KEY="sk-ant-..."` in your shell
 
 ## Step 1: Run the Setup Wizard
 
@@ -17,7 +19,7 @@ cd airlock/
 
 The wizard will:
 - Check that Docker, sudo, dig, and ssh-keygen are available
-- Detect your Claude Code credentials
+- Detect your authentication (OAuth credentials file or `ANTHROPIC_API_KEY`)
 - Generate an Ed25519 signing key if you don't have one
 - Create the `~/.airlock/` state directories
 - Set up the `allowed_signers` file for extraction signing
@@ -47,21 +49,21 @@ Replace `~/projects/my-app` with the path to your project.
 The launch script:
 1. Sanitizes your project (strips secrets, `.git/`, `node_modules/`, etc.)
 2. Starts a hardened container with no network
-3. Injects firewall rules (Anthropic API only)
+3. Injects firewall rules (configured API domains only)
 4. Connects the network and waits for readiness
-5. Starts a watchdog and attaches you to the Claude Code session
+5. Starts a watchdog and attaches you to the AI session
 
-You'll see the **AIRLOCK ACTIVE** banner with session details, then Claude's interface.
+You'll see the **AIRLOCK ACTIVE** banner with session details, then the AI's interface.
 
-## Step 4: Work with Claude
+## Step 4: Work Inside the Sandbox
 
-You're now inside a sandboxed Claude Code session. Claude has full autonomy within the container but:
-- Can only reach the Anthropic API (all other network traffic is dropped)
+You're now inside a sandboxed session. The AI has full autonomy within the container but:
+- Can only reach the configured API endpoints (all other network traffic is dropped)
 - Cannot access your host filesystem
 - Cannot escalate privileges
 - Is monitored by a host-side watchdog
 
-Work with Claude as you normally would. When done, press `Ctrl+C` or let Claude exit naturally.
+Work normally. When done, press `Ctrl+C` or let the AI exit naturally.
 
 ## Step 5: Extract Changes
 
@@ -97,6 +99,20 @@ If something goes wrong, open a second terminal and kill the session:
 ```
 
 The kill switch runs on the host — the container cannot prevent or delay it.
+
+## Using a Different AI Tool
+
+Airlock defaults to Claude Code but supports any AI coding tool:
+
+```bash
+export AIRLOCK_AI_COMMAND="aider --yes"
+# Edit airlock.conf: AIRLOCK_API_DOMAINS="api.openai.com"
+# Build an image with your tool installed
+./airlock-build.sh Dockerfile.custom airlock-custom:latest
+./airlock-launch.sh airlock-custom:latest ~/projects/my-app
+```
+
+See the [README](README.md#using-other-ai-tools) for full details.
 
 ## Next Steps
 

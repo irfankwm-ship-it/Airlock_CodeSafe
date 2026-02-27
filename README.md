@@ -8,9 +8,9 @@ CodeSafe is a collection of open-source tools that add security guardrails to AI
 
 ### [Airlock](airlock/)
 
-A hardened Docker sandbox for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with `--dangerously-skip-permissions`. Claude gets full autonomy inside a sealed container. Network access is limited to the Anthropic API only. Nothing comes back to your machine until you review every change and sign off with your SSH key.
+A hardened Docker sandbox for running AI coding agents (Claude Code, Aider, Codex, etc.) in a sealed, network-isolated container. The AI gets full autonomy inside the box. Network access is limited to configured API endpoints only. Nothing comes back to your machine until you review every change and sign off with your SSH key.
 
-**Use Airlock when:** You want Claude Code to work autonomously on your codebase but don't want to trust it with unrestricted access to your filesystem, network, and credentials.
+**Use Airlock when:** You want an AI coding agent to work autonomously on your codebase but don't want to trust it with unrestricted access to your filesystem, network, and credentials.
 
 [Get started with Airlock](airlock/QUICKSTART.md)
 

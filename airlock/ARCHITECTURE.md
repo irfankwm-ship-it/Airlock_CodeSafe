@@ -23,18 +23,19 @@ Last updated: 2026-02-27
 
 ## 1. System Overview
 
-Airlock is a hardened sandbox for running Claude Code sessions inside Docker
-containers. The core principle:
+Airlock is a hardened sandbox for running AI coding agents inside Docker
+containers. It is designed for Claude Code but supports any AI tool via
+the configurable `AIRLOCK_AI_COMMAND`. The core principle:
 
-> Claude gets full autonomy inside a sealed box. Nothing leaves without
+> The AI gets full autonomy inside a sealed box. Nothing leaves without
 > human review and cryptographic approval.
 
-Claude operates with `--dangerously-skip-permissions` inside the container,
-meaning it can read, write, and execute anything within the sandbox. But
-the sandbox is hermetically sealed: the network is firewalled to a single
-destination (the Anthropic API on TCP 443), the filesystem is read-only
-except for tmpfs mounts, syscalls are filtered to a whitelist, and all
-Linux capabilities are dropped.
+The AI operates with full permissions inside the container (e.g., Claude
+Code with `--dangerously-skip-permissions`), meaning it can read, write,
+and execute anything within the sandbox. But the sandbox is hermetically
+sealed: the network is firewalled to configured API domains only (TCP
+443), the filesystem is read-only except for tmpfs mounts, syscalls are
+filtered to a whitelist, and all Linux capabilities are dropped.
 
 When the session ends, output does not flow back to the host automatically.
 Instead, the container is paused, its files are security-scanned, a diff
@@ -71,10 +72,10 @@ Firewall rules:
 
 - **Default OUTPUT policy**: DROP
 - **Allowed**: Loopback, ESTABLISHED/RELATED (return traffic), and
-  explicit per-IP rules for resolved Anthropic API IPs on TCP 443
+  explicit per-IP rules for resolved `AIRLOCK_API_DOMAINS` IPs on TCP 443
 - **IPv6**: OUTPUT policy DROP, loopback only
 - **DNS**: Blocked. `--dns 0.0.0.0` prevents DNS resolution from inside.
-  Anthropic API hostnames are injected via `--add-host` flags using IPs
+  API hostnames are injected via `--add-host` flags using IPs
   resolved at launch time from multiple DNS servers (1.1.1.1, 8.8.8.8,
   9.9.9.9).
 - **Logging**: All blocked packets are logged with `iptables -j LOG`
@@ -130,12 +131,14 @@ binaries, capability bits, or other escalation vectors.
   The home directory is ephemeral and rebuilt each session. The `exec`
   flag is needed because Claude Code's Node.js runtime may write and
   execute from here.
-- **Credentials via /run/credentials**: The host credentials file is
-  bind-mounted read-only at `/run/credentials/.credentials.json`. The
-  entrypoint symlinks it into `/home/claude/.claude/` on the tmpfs. This
-  keeps credentials outside the writable tmpfs and read-only.
+- **Credentials via /run/credentials** (OAuth mode): The host credentials
+  file is bind-mounted read-only at `/run/credentials/.credentials.json`.
+  The entrypoint symlinks it into `/home/claude/.claude/` on the tmpfs.
+  This keeps credentials outside the writable tmpfs and read-only.
+  Alternatively, API key auth passes `ANTHROPIC_API_KEY` as an env var
+  (no file mount needed).
 - **Project files via /workspace/project**: The sanitized staged
-  directory is bind-mounted read-write so Claude can modify project files.
+  directory is bind-mounted read-write so the AI can modify project files.
 
 ### 2.6 Resource Limits
 
@@ -180,9 +183,9 @@ Checks performed before any container is created:
 3. **Image hash verification** -- compares the current image ID against
    the stored hash in `~/.airlock/hashes/<image-name>.hash`. Mismatch
    aborts with a tampering warning.
-4. **Credentials check** -- verifies the host credentials file exists at
-   `~/.claude/.credentials.json`.
-5. **DNS resolution** -- resolves `api.anthropic.com` using three DNS
+4. **Auth check** -- verifies either a credentials file exists or
+   `ANTHROPIC_API_KEY` is set.
+5. **DNS resolution** -- resolves `AIRLOCK_API_DOMAINS` using three DNS
    servers (1.1.1.1, 8.8.8.8, 9.9.9.9), deduplicates the IPs.
 6. **Project path validation** -- confirms the project directory exists.
 7. **Session directory creation** -- creates `~/.airlock/sessions/<id>/`.
@@ -247,7 +250,7 @@ IPv4:
   OUTPUT policy DROP
   ACCEPT on loopback
   ACCEPT ESTABLISHED,RELATED
-  ACCEPT dst <each-anthropic-ip> tcp dport 443
+  ACCEPT dst <each-api-domain-ip> tcp dport 443
   LOG prefix "AIRLOCK-BLOCKED:" level 4
 
 IPv6:
@@ -439,8 +442,8 @@ verified by `airlock-build.sh`:
 | 1  | `/usr/local/bin/entrypoint.sh` exists            | `docker run --entrypoint="" test -f`  |
 | 2  | User `claude` exists with UID 1000              | `docker run --entrypoint="" id -u`    |
 | 3  | `/workspace/project` directory exists            | `docker run --entrypoint="" test -d`  |
-| 4  | `claude` binary is on PATH                       | `docker run --entrypoint="" which`    |
-| 5  | Entrypoint touches `/tmp/.key-loaded` then execs | Convention (not statically verified)  |
+| 4  | AI binary on PATH (`$AIRLOCK_AI_COMMAND` first word) | `docker run --entrypoint="" which`    |
+| 5  | Entrypoint touches `/tmp/.key-loaded` then execs `$AIRLOCK_AI_COMMAND` | Convention (not statically verified)  |
 
 ### 5.1 Decoupled Build/Launch Model
 
@@ -542,13 +545,13 @@ airlock-watchdog.sh
   output.
 - **The Ed25519 signing key** -- Assumed to be passphrase-protected
   and not accessible from inside the container.
-- **The Anthropic API** -- The sole allowed network destination. Airlock
-  assumes the API is not adversarial.
+- **Configured API endpoints** -- The allowed network destinations
+  (`AIRLOCK_API_DOMAINS`). Airlock assumes these are not adversarial.
 
 ### Untrusted
 
-- **Everything inside the container** -- Claude, any code Claude writes,
-  any processes Claude spawns, any files Claude creates. All of it is
+- **Everything inside the container** -- The AI agent, any code it writes,
+  any processes it spawns, any files it creates. All of it is
   treated as potentially adversarial output.
 - **The staged directory contents after a session** -- Treated as
   untrusted until reviewed and signed.
@@ -620,7 +623,7 @@ directory is deleted. This is a hard abort with no data extraction.
 | File                     | Role                                                    | Phases        |
 |--------------------------|---------------------------------------------------------|---------------|
 | `airlock.conf`           | Central configuration. Sourced by all scripts. Paths, limits, thresholds, credentials references (no secrets). | All |
-| `entrypoint.sh`          | Container entrypoint. Symlinks credentials, signals readiness, execs Claude. | 2, 4 |
+| `entrypoint.sh`          | Container entrypoint. Sets up auth, signals readiness, execs `$AIRLOCK_AI_COMMAND`. | 2, 4 |
 | `seccomp-profile.json`   | Syscall whitelist. ~155 allowed syscalls, everything else ERRNO. | 2 |
 | `airlock-build.sh`       | Builds Docker image, stores hash, verifies 5-point contract. | Pre-launch |
 | `airlock-sanitize.sh`    | Allowlist-based project copy + secret scanning.         | 1 |
@@ -659,12 +662,12 @@ directory is deleted. This is a hard abort with no data extraction.
    or speculative execution attacks from inside the container are not
    mitigated.
 
-4. **Covert channels via the Anthropic API** -- Claude can communicate
-   freely with the Anthropic API. If the API were compromised or if
-   Claude encoded data in its API requests, that traffic is allowed
-   through the firewall. Airlock trusts the API endpoint.
+4. **Covert channels via the API** -- The AI can communicate freely with
+   its configured API endpoints. If the API were compromised or if the AI
+   encoded data in its API requests, that traffic is allowed through the
+   firewall. Airlock trusts the configured API domains.
 
-5. **Steganographic output** -- Claude could embed hidden information in
+5. **Steganographic output** -- The AI could embed hidden information in
    code that looks benign (e.g., variable names encoding data, specific
    whitespace patterns, algorithmic backdoors). The automated scan
    catches obvious patterns but cannot detect semantic-level hiding.
@@ -675,7 +678,7 @@ directory is deleted. This is a hard abort with no data extraction.
    Ed25519 signature is a non-repudiation mechanism, not a content
    verification mechanism.
 
-7. **Denial of service within the container** -- Claude can exhaust
+7. **Denial of service within the container** -- The AI can exhaust
    resources up to the configured limits (4 GB RAM, 256 PIDs, 2 CPUs).
    The watchdog will detect and kill if thresholds are exceeded, but
    the resources are consumed until then.
@@ -698,14 +701,14 @@ directory is deleted. This is a hard abort with no data extraction.
 
 ### Design Trade-offs
 
-- **DNS is blocked entirely** -- Anthropic IPs are resolved once at
-  launch time and injected via `--add-host`. If the Anthropic API
-  rotates IPs during a session, the container loses connectivity.
-  This is accepted as preferable to allowing DNS resolution, which
-  could be used for data exfiltration.
+- **DNS is blocked entirely** -- API domain IPs are resolved once at
+  launch time and injected via `--add-host`. If the provider rotates
+  IPs during a session, the container loses connectivity. This is
+  accepted as preferable to allowing DNS resolution, which could be
+  used for data exfiltration.
 
 - **Seccomp whitelist includes `socket` and `connect`** -- These are
-  needed for the Anthropic API. The firewall is the enforcement
+  needed for API communication. The firewall is the enforcement
   layer for network destinations, not seccomp. A compromised seccomp
   would still face the iptables rules.
 

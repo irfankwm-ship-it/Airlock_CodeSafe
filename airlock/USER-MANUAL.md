@@ -2,7 +2,7 @@
 
 ## 1. What is Airlock
 
-Airlock is a security wrapper that runs Claude Code inside a locked-down Docker container. Your project files go in, Claude works on them in isolation with no internet access except the Anthropic API, and nothing comes back out until you personally review and approve every change. Think of it as a clean room for AI-assisted coding.
+Airlock is a security wrapper that runs AI coding agents (Claude Code, Aider, Codex, etc.) inside a locked-down Docker container. Your project files go in, the AI works on them in isolation with no internet access except configured API endpoints, and nothing comes back out until you personally review and approve every change. Think of it as a clean room for AI-assisted coding.
 
 ## 2. Prerequisites
 
@@ -20,7 +20,11 @@ Before you begin, make sure you have the following:
   ssh-keygen -t ed25519 -C "airlock"
   ```
 
-- **Claude Code credentials** at `~/.claude/.credentials.json`. This file comes from authenticating Claude Code with a Max subscription (OAuth). If the file does not exist, install Claude Code on the host, run `claude`, and complete the login flow.
+- **Authentication** — one of the following:
+
+  - **OAuth credentials file** at `~/.claude/.credentials.json`. This file comes from authenticating Claude Code with a Max subscription. If the file does not exist, install Claude Code on the host, run `claude`, and complete the login flow.
+
+  - **API key** via environment variable. Set `ANTHROPIC_API_KEY` (or the appropriate key for your AI provider) before launching. When an API key is set, no credentials file is needed.
 
 - **sudo access**. Airlock uses `sudo nsenter` and `sudo iptables` to apply firewall rules inside the container's network namespace. You will be prompted for your password during launch.
 
@@ -103,11 +107,11 @@ Your Dockerfile must satisfy the **image contract**. All five points are mandato
 2. The directory `/workspace/project` exists and is owned by `claude`.
 3. `entrypoint.sh` is copied to `/usr/local/bin/entrypoint.sh` and set as the `ENTRYPOINT`.
 4. The entrypoint touches `/tmp/.key-loaded` as a readiness signal.
-5. The entrypoint execs `claude --dangerously-skip-permissions`.
+5. The entrypoint execs `$AIRLOCK_AI_COMMAND` (default: `claude --dangerously-skip-permissions`).
 
 See `Dockerfile.example` for a minimal template. See `Dockerfile.base` for a batteries-included dev image with Python, Node.js, dev tools, and bash audit logging.
 
-Authentication is never baked into the image. Credentials are bind-mounted at runtime.
+Authentication is never baked into the image. Credentials are bind-mounted or passed via environment variables at runtime.
 
 ## 5. Launching a Session
 
@@ -127,13 +131,13 @@ Example:
 
 The launch script runs through five phases:
 
-**Phase 0 -- Pre-flight checks.** Verifies the image exists, its hash matches the stored hash, credentials are present, the Anthropic API domain resolves, the project path exists, and the concurrent session limit has not been reached. Creates an internal Docker network.
+**Phase 0 -- Pre-flight checks.** Verifies the image exists, its hash matches the stored hash, authentication is present (credentials file or API key), configured API domains resolve, the project path exists, and the concurrent session limit has not been reached. Creates an internal Docker network.
 
 **Phase 1 -- Sanitize project.** Copies your project into a temporary staging directory. Strips secrets (`.env`, `.pem`, `.key`, etc.), removes non-essential files (`.git/`, `node_modules/`, `__pycache__/`), and runs pattern-based secret scanning. If a critical secret pattern is found (API keys, private keys), the launch aborts.
 
 **Phase 2 -- Launch container.** Starts the container with `--network none` (no network at all), a read-only root filesystem, tmpfs for `/tmp` and `/home/claude`, all capabilities dropped, a seccomp whitelist, AppArmor, resource limits (memory, CPU, PID, file descriptor limits), and IPv6 disabled.
 
-**Phase 3 -- Apply firewall.** Uses `sudo nsenter` to inject iptables rules into the container's network namespace. The OUTPUT chain default policy is DROP. Only TCP 443 to resolved Anthropic API IPs is allowed. All other outbound traffic is logged and dropped.
+**Phase 3 -- Apply firewall.** Uses `sudo nsenter` to inject iptables rules into the container's network namespace. The OUTPUT chain default policy is DROP. Only TCP 443 to resolved API domain IPs (configured in `AIRLOCK_API_DOMAINS`) is allowed. All other outbound traffic is logged and dropped.
 
 **Phase 4 -- Connect network and wait.** Connects the container to the internal Docker network (firewall is already active at this point). Waits for the readiness signal (`/tmp/.key-loaded`). Starts the watchdog process. Saves session metadata.
 
@@ -150,7 +154,7 @@ After all phases complete, the screen clears and you see:
   |  Image:     airlock-base:latest                               |
   |  Project:   my-app                                             |
   |                                                                |
-  |  Firewall:  Anthropic API only (TCP 443)                       |
+  |  Firewall:  Configured API domains only (TCP 443)               |
   |  Seccomp:   Whitelist-only (185 syscalls)                      |
   |  Filesystem: Read-only rootfs + tmpfs                          |
   |  Watchdog:  PID 54321 (timeout: 14400s)                        |
@@ -161,20 +165,20 @@ After all phases complete, the screen clears and you see:
   +--------------------------------------------------------------+
 ```
 
-You are now attached to the Claude Code session inside the container.
+You are now attached to the AI session inside the container.
 
 ## 6. Working Inside Airlock
 
 ### 6.1 What works
 
-- Claude Code operates normally. You interact with it exactly as you would on the host.
+- The AI coding tool operates normally. You interact with it exactly as you would on the host.
 - Your project files are available at `/workspace/project` inside the container.
-- Claude can read, edit, create, and delete files within the project.
+- The AI can read, edit, create, and delete files within the project.
 - Tools installed in the image (git, python3, ripgrep, etc.) are available.
 
 ### 6.2 What does not work
 
-- **No internet access** except the Anthropic API on TCP 443. All other outbound connections are dropped and logged.
+- **No internet access** except configured API domains on TCP 443. All other outbound connections are dropped and logged.
 - **No access to the host filesystem** beyond the mounted project staging directory and read-only credentials.
 - **No privilege escalation.** All Linux capabilities are dropped, `no-new-privileges` is set, and a seccomp whitelist blocks unauthorized syscalls.
 - **Changes stay inside the container.** Nothing is synced back to your real project until you explicitly extract and approve.
@@ -312,7 +316,7 @@ This kills all sessions AND deletes all session logs. Use this only when you wan
 |---------|-------------|---------|-------------|
 | `./airlock-build.sh <dockerfile> <image>` | Build an image and verify its contract | `./airlock-build.sh Dockerfile.base airlock-base:latest` | Before your first launch, or after changing a Dockerfile |
 | `./airlock-build.sh _ <image> --verify-only` | Re-verify an existing image without rebuilding | `./airlock-build.sh _ airlock-base:latest --verify-only` | Auditing an image you built previously |
-| `./airlock-launch.sh <image> <project>` | Launch a sandboxed Claude Code session | `./airlock-launch.sh airlock-base:latest ~/projects/my-app` | Starting work on a project |
+| `./airlock-launch.sh <image> <project>` | Launch a sandboxed AI session | `./airlock-launch.sh airlock-base:latest ~/projects/my-app` | Starting work on a project |
 | `./airlock-extract.sh <container>` | Review, sign, and sync changes back to your project | `./airlock-extract.sh airlock-20260227-143000-12345` | After a session ends, to get your changes out |
 | `./airlock-kill.sh <container>` | Emergency kill a specific session | `./airlock-kill.sh airlock-20260227-143000-12345` | Something is wrong, abort immediately |
 | `./airlock-kill.sh --list` | List all running airlock sessions | `./airlock-kill.sh --list` | Finding the container name to kill or extract |
@@ -370,11 +374,12 @@ All settings are in `airlock.conf`. Every airlock script sources this file. No s
 | `AIRLOCK_ALLOWED_SIGNERS` | `$HOME/.airlock/allowed_signers` | SSH allowed_signers file for signature verification |
 | `AIRLOCK_SECCOMP_PROFILE` | `$HOME/airlock/seccomp-profile.json` | Seccomp whitelist profile applied to the container |
 
-### Credentials
+### Credentials and Authentication
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `AIRLOCK_CREDENTIALS_HOST` | `$HOME/.claude/.credentials.json` | Host path to Claude credentials file |
+| `AIRLOCK_CREDENTIALS_HOST` | `$HOME/.claude/.credentials.json` | Host path to OAuth credentials file (Option A) |
+| `AIRLOCK_API_KEY` | (unset) | Set via `ANTHROPIC_API_KEY` env var (Option B). When set, credentials file is not required. |
 | `AIRLOCK_CREDENTIALS_MOUNT` | `/run/credentials/.credentials.json` | Mount point inside the container (outside tmpfs) |
 | `AIRLOCK_CREDENTIALS_CONTAINER` | `/home/claude/.claude/.credentials.json` | Where the entrypoint symlinks credentials to |
 
@@ -397,6 +402,12 @@ All settings are in `airlock.conf`. Every airlock script sources this file. No s
 | `AIRLOCK_ANOMALY_FILE_BURST` | `200` | New files per check interval that trigger a strike |
 | `AIRLOCK_FW_LOG_PREFIX` | `AIRLOCK-BLOCKED:` | Prefix in iptables LOG rules; used to parse dmesg for blocked connections |
 
+### AI Command
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `AIRLOCK_AI_COMMAND` | `claude --dangerously-skip-permissions` | Command the entrypoint execs inside the container. Override for other AI tools (e.g., `aider --yes`). The binary must be installed in the image. |
+
 ### Optional
 
 | Variable | Default | Description |
@@ -417,16 +428,22 @@ The image on disk does not match the hash stored during the last build. This can
 ./airlock-build.sh Dockerfile.base airlock-base:latest
 ```
 
-### "credentials not found"
+### "no authentication found"
 
-The file `~/.claude/.credentials.json` does not exist. Install Claude Code on the host and authenticate:
+Neither a credentials file nor an API key was detected. Fix with one of:
 
+**Option A — OAuth credentials** (Claude Code):
 ```
 npm install -g @anthropic-ai/claude-code
 claude
 ```
+Complete the login flow. This creates `~/.claude/.credentials.json` automatically.
 
-Complete the OAuth login flow. The credentials file will be created automatically.
+**Option B — API key:**
+```
+export ANTHROPIC_API_KEY="sk-ant-..."
+./airlock-launch.sh airlock-base:latest ~/projects/my-app
+```
 
 ### "readiness signal not received"
 
@@ -527,9 +544,9 @@ If no allowlist file is found for the project, the sanitizer uses a built-in def
 
 - **One project per session.** Each launch is tied to one project directory. Do not try to work on multiple projects in one session.
 
-- **Credentials are read-only.** The credentials file is bind-mounted read-only. Claude cannot modify it, and it is mounted at `/run/credentials/` which is separate from the tmpfs at `/home/claude`.
+- **Credentials are read-only.** If using OAuth, the credentials file is bind-mounted read-only. The AI cannot modify it, and it is mounted at `/run/credentials/` which is separate from the tmpfs at `/home/claude`. If using an API key, it is passed as an environment variable.
 
-- **Rebuild after updating Claude Code.** If you update the `@anthropic-ai/claude-code` npm package, you need to rebuild your image to get the new version inside the container:
+- **Rebuild after updating your AI tool.** If you update the AI tool (e.g., `@anthropic-ai/claude-code` npm package), you need to rebuild your image to get the new version inside the container:
 
   ```
   ./airlock-build.sh Dockerfile.base airlock-base:latest

@@ -4,14 +4,14 @@ Threat model, defense layers, trust boundaries, and known limitations.
 
 ## What Airlock Defends Against
 
-Airlock assumes Claude Code may attempt any of the following when running with `--dangerously-skip-permissions`:
+Airlock assumes the AI coding agent inside the container may attempt any of the following:
 
 | Threat | Defense |
 |--------|---------|
-| **Data exfiltration via network** | iptables firewall allows only Anthropic API on TCP 443. All other traffic is dropped and logged. |
+| **Data exfiltration via network** | iptables firewall allows only configured API domains on TCP 443. All other traffic is dropped and logged. |
 | **Container escape via syscalls** | Whitelist-only seccomp profile (~155 syscalls). Dangerous syscalls (`ptrace`, `mount`, `unshare`, `setns`, `bpf`, etc.) are blocked. |
 | **Privilege escalation** | All 41 Linux capabilities dropped. `no-new-privileges` set. Non-root user (UID 1000). |
-| **DNS-based exfiltration** | `--dns 0.0.0.0` blocks all DNS. Anthropic IPs pre-resolved and injected via `--add-host`. |
+| **DNS-based exfiltration** | `--dns 0.0.0.0` blocks all DNS. API domain IPs pre-resolved and injected via `--add-host`. |
 | **IPv6 firewall bypass** | IPv6 disabled at kernel level + ip6tables DROP policy. |
 | **Terminal injection via ANSI escapes** | Extraction pipeline scans for raw ANSI escape sequences in output files. |
 | **Symlink escape** | Extraction pipeline scans for symlinks in staged files. |
@@ -27,7 +27,7 @@ The container starts with `--network none` (zero network access). A per-session 
 
 **Firewall rules:**
 - IPv4 OUTPUT default: DROP
-- Allowed: loopback, ESTABLISHED/RELATED, Anthropic API IPs on TCP 443
+- Allowed: loopback, ESTABLISHED/RELATED, configured API domain IPs on TCP 443
 - All blocked packets logged with `AIRLOCK-BLOCKED:` prefix
 - IPv6 OUTPUT default: DROP (loopback only)
 
@@ -35,7 +35,7 @@ The container starts with `--network none` (zero network access). A per-session 
 
 - Read-only root filesystem (`--read-only`)
 - tmpfs for `/tmp` (2 GB, nosuid) and `/home/claude` (1 GB, exec needed for Node.js)
-- Credentials mounted read-only at `/run/credentials/` (outside tmpfs)
+- Credentials mounted read-only at `/run/credentials/` (outside tmpfs), or API key passed via env var
 - Project files bind-mounted from a sanitized staging copy
 
 ### 3. Capability Dropping
@@ -107,11 +107,11 @@ The extraction pipeline is the gate between the sandbox and your real files. It 
 - **Airlock scripts** — run on the host, not inside the container
 - **Human reviewer** — the primary defense against malicious output
 - **Ed25519 signing key** — passphrase-protected, not accessible from container
-- **Anthropic API** — the sole allowed network destination
+- **Configured API endpoints** — the allowed network destinations (Anthropic API by default)
 
 ### Untrusted
 
-- **Everything inside the container** — Claude, its code, its processes, its files
+- **Everything inside the container** — the AI agent, its code, its processes, its files
 - **Staged directory after a session** — untrusted until reviewed and signed
 - **All network traffic from inside** — only whitelisted destinations reachable
 
@@ -119,15 +119,15 @@ The extraction pipeline is the gate between the sandbox and your real files. It 
 
 1. **Not VM-level isolation.** Airlock uses Docker (shared kernel). A kernel-level container escape vulnerability would bypass all defenses. For higher assurance, layer a VM or microVM (Firecracker, gVisor) underneath.
 
-2. **Covert channels via the API.** Claude communicates freely with the Anthropic API. Data could be encoded in API requests. Airlock trusts the API endpoint.
+2. **Covert channels via the API.** The AI communicates freely with its configured API endpoint. Data could be encoded in API requests. Airlock trusts the allowed API domains.
 
-3. **Steganographic output.** Claude could embed hidden information in code that looks benign (variable names, whitespace patterns, algorithmic backdoors). Automated scans catch obvious patterns but not semantic-level hiding. Human review is the defense.
+3. **Steganographic output.** The AI could embed hidden information in code that looks benign (variable names, whitespace patterns, algorithmic backdoors). Automated scans catch obvious patterns but not semantic-level hiding. Human review is the defense.
 
 4. **Reviewer error.** If you approve a malicious diff without reading it, the signed files are synced. The signature is non-repudiation, not content verification.
 
 5. **Side-channel attacks.** Timing, cache, and speculative execution attacks from inside the container are not mitigated.
 
-6. **DNS rotation.** Anthropic IPs are resolved once at launch. If they rotate during a session, connectivity is lost. This is accepted as preferable to allowing DNS.
+6. **DNS rotation.** API domain IPs are resolved once at launch. If they rotate during a session, connectivity is lost. This is accepted as preferable to allowing DNS.
 
 7. **No file deletion propagation.** Files deleted inside the container are not deleted on the host. Deletions must be done manually.
 

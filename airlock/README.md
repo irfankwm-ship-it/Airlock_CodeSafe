@@ -1,6 +1,8 @@
 # Airlock
 
-A hardened Docker sandbox for running [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with `--dangerously-skip-permissions` in a sealed, network-isolated container. Claude gets full autonomy inside the box. Nothing leaves without human review and cryptographic approval.
+A hardened Docker sandbox for running AI coding agents in a sealed, network-isolated container. The AI gets full autonomy inside the box. Nothing leaves without human review and cryptographic approval.
+
+Designed for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) with `--dangerously-skip-permissions`, but works with any AI coding tool (Aider, Codex, etc.) via the configurable `AIRLOCK_AI_COMMAND`.
 
 ## Quick Start
 
@@ -36,9 +38,9 @@ Any Docker image used with Airlock must satisfy these 5 points:
 | 2 | `/workspace/project` directory exists, owned by `claude` |
 | 3 | `entrypoint.sh` copied to `/usr/local/bin/` and set as `ENTRYPOINT` |
 | 4 | Entrypoint touches `/tmp/.key-loaded` as readiness signal |
-| 5 | Entrypoint execs `claude --dangerously-skip-permissions` |
+| 5 | Entrypoint execs `$AIRLOCK_AI_COMMAND` (default: `claude --dangerously-skip-permissions`) |
 
-Authentication is handled via mounted credentials (bind-mounted read-only at runtime), not baked into the image. See `Dockerfile.example` for a minimal template and `Dockerfile.base` for a batteries-included dev environment.
+Authentication is handled via mounted credentials or environment variables at runtime, not baked into the image. See `Dockerfile.example` for a minimal template and `Dockerfile.base` for a batteries-included dev environment.
 
 ## Security Architecture
 
@@ -46,7 +48,7 @@ Authentication is handled via mounted credentials (bind-mounted read-only at run
 
 | Layer | Implementation |
 |-------|---------------|
-| Network isolation | `--network none` at launch, iptables whitelist for Anthropic API only |
+| Network isolation | `--network none` at launch, iptables whitelist for configured API domains only |
 | Read-only filesystem | `--read-only` rootfs, tmpfs for `/tmp` and `/home/claude` |
 | Capability dropping | `--cap-drop ALL`, `no-new-privileges` |
 | Syscall filtering | Whitelist-only seccomp profile (~155 allowed syscalls) |
@@ -77,18 +79,62 @@ A host-side watchdog monitors every session — invisible and unstoppable from i
 - Periodic checkpoints for forensic breadcrumbs
 - Hard session timeout (default: 4 hours)
 
+## Authentication
+
+Airlock supports two auth methods:
+
+**Option A — OAuth credentials file** (Claude Max subscription):
+```bash
+# Authenticate on the host first
+claude    # complete login flow → creates ~/.claude/.credentials.json
+# Airlock mounts it into the container automatically
+```
+
+**Option B — API key** (any provider):
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+./airlock-launch.sh airlock-base:latest ~/projects/my-app
+```
+
+When `ANTHROPIC_API_KEY` is set, no credentials file is needed.
+
 ## Configuration
 
 All settings in `airlock.conf`. Key options support environment variable overrides:
 
 | Variable | Default | Override Env Var |
 |----------|---------|-----------------|
+| `AIRLOCK_AI_COMMAND` | `claude --dangerously-skip-permissions` | `AIRLOCK_AI_COMMAND` |
+| `AIRLOCK_API_DOMAINS` | `api.anthropic.com platform.claude.com` | Edit `airlock.conf` |
 | `AIRLOCK_CREDENTIALS_HOST` | `~/.claude/.credentials.json` | `AIRLOCK_CREDENTIALS_HOST` |
+| `AIRLOCK_API_KEY` | (unset) | `ANTHROPIC_API_KEY` |
 | `AIRLOCK_SIGNING_KEY` | `~/.ssh/id_ed25519` | `AIRLOCK_SIGNING_KEY` |
 | `AIRLOCK_SECCOMP_PROFILE` | `<install-dir>/seccomp-profile.json` | `AIRLOCK_SECCOMP_PROFILE` |
 | `AIRLOCK_BASE_DIR` | Auto-detected from conf location | `AIRLOCK_BASE_DIR` |
 | `AIRLOCK_MEMORY` | `4g` | Edit `airlock.conf` |
 | `AIRLOCK_SESSION_TIMEOUT` | `14400` (4h) | Edit `airlock.conf` |
+
+See `airlock.conf` for the complete list with descriptions.
+
+## Using Other AI Tools
+
+Airlock defaults to Claude Code but works with any AI coding tool:
+
+```bash
+# Example: Aider with OpenAI
+export AIRLOCK_AI_COMMAND="aider --yes"
+export ANTHROPIC_API_KEY=""  # clear if set
+# Edit airlock.conf: AIRLOCK_API_DOMAINS="api.openai.com"
+# Build an image with aider installed instead of claude
+./airlock-build.sh Dockerfile.custom airlock-aider:latest
+./airlock-launch.sh airlock-aider:latest ~/projects/my-app
+```
+
+To use a different AI tool, you need to:
+1. Set `AIRLOCK_AI_COMMAND` to the command to exec inside the container
+2. Update `AIRLOCK_API_DOMAINS` in `airlock.conf` to your provider's API domain
+3. Build an image with your AI tool installed (the tool's binary must be on PATH)
+4. Pass the appropriate auth (env var or credentials file)
 
 See `airlock.conf` for the complete list with descriptions.
 
