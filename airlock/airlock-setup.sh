@@ -81,20 +81,26 @@ echo ""
 
 CRED_PATH="${AIRLOCK_CREDENTIALS_HOST}"
 
-if [ -f "$CRED_PATH" ]; then
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    ok "ANTHROPIC_API_KEY is set in environment"
+    echo "  Airlock will pass this to the container. No credentials file needed."
+elif [ -f "$CRED_PATH" ]; then
     ok "Credentials found at $CRED_PATH"
 else
-    warn "Credentials not found at $CRED_PATH"
+    warn "No authentication found"
     echo ""
-    echo "  Claude Code credentials are created when you authenticate with Claude Code."
-    echo "  To create them:"
+    echo "  Airlock supports two auth methods:"
     echo ""
+    echo "  Option A — OAuth credentials (Claude Max subscription):"
     echo "    npm install -g @anthropic-ai/claude-code"
-    echo "    claude"
+    echo "    claude          # complete the login flow"
+    echo "    # Creates ~/.claude/.credentials.json automatically"
     echo ""
-    echo "  Complete the OAuth login flow, then re-run this setup."
+    echo "  Option B — API key:"
+    echo "    export ANTHROPIC_API_KEY=\"sk-ant-...\""
+    echo "    # Set this before running airlock-launch.sh"
     echo ""
-    ask "Enter custom credentials path (or press Enter to skip):"
+    ask "Enter custom credentials path, or press Enter to skip:"
     read -r custom_cred
     if [ -n "$custom_cred" ] && [ -f "$custom_cred" ]; then
         CRED_PATH="$custom_cred"

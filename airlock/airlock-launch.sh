@@ -74,12 +74,20 @@ if [ "$STORED_HASH" != "$CURRENT_HASH" ]; then
 fi
 echo "  Image hash verified: ${CURRENT_HASH:0:20}..."
 
-# Verify credentials file
-if [ ! -f "$AIRLOCK_CREDENTIALS_HOST" ]; then
-    echo "ERROR: credentials not found at $AIRLOCK_CREDENTIALS_HOST" >&2
+# Verify credentials (file or API key)
+if [ -n "$AIRLOCK_API_KEY" ]; then
+    echo "  Auth mode: API key (ANTHROPIC_API_KEY)"
+    AIRLOCK_AUTH_MODE="api_key"
+elif [ -f "$AIRLOCK_CREDENTIALS_HOST" ]; then
+    echo "  Auth mode: OAuth credentials file"
+    AIRLOCK_AUTH_MODE="credentials_file"
+else
+    echo "ERROR: no authentication found." >&2
+    echo "  Either set ANTHROPIC_API_KEY or ensure credentials exist at:" >&2
+    echo "  $AIRLOCK_CREDENTIALS_HOST" >&2
+    echo "  Run './airlock-setup.sh' for help." >&2
     exit 1
 fi
-echo "  Credentials file found"
 
 # Multi-DNS resolve Anthropic IPs
 echo "  Resolving Anthropic API IPs..."
@@ -179,6 +187,16 @@ if [ -d "$ENHANCE_DIR" ]; then
     done
 fi
 
+# Build auth flags based on mode
+AUTH_FLAGS=""
+AUTH_ENV_FLAGS=""
+if [ "$AIRLOCK_AUTH_MODE" = "credentials_file" ]; then
+    AUTH_FLAGS="-v $AIRLOCK_CREDENTIALS_HOST:$AIRLOCK_CREDENTIALS_MOUNT:ro"
+    AUTH_ENV_FLAGS="-e ANTHROPIC_AUTH_TOKEN_FILE=$AIRLOCK_CREDENTIALS_CONTAINER"
+elif [ "$AIRLOCK_AUTH_MODE" = "api_key" ]; then
+    AUTH_ENV_FLAGS="-e ANTHROPIC_API_KEY=$AIRLOCK_API_KEY"
+fi
+
 # shellcheck disable=SC2086
 docker run -dit \
     --name "$CONTAINER_NAME" \
@@ -199,10 +217,10 @@ docker run -dit \
     --dns 0.0.0.0 \
     $ADD_HOST_FLAGS \
     -v "$STAGED_DIR:/workspace/project:rw" \
-    -v "$AIRLOCK_CREDENTIALS_HOST:$AIRLOCK_CREDENTIALS_MOUNT:ro" \
+    $AUTH_FLAGS \
     $ENHANCE_FLAGS \
     $PORT_FLAGS \
-    -e "ANTHROPIC_AUTH_TOKEN_FILE=$AIRLOCK_CREDENTIALS_CONTAINER" \
+    $AUTH_ENV_FLAGS \
     -e "AIRLOCK_ENHANCEMENTS=$ENHANCE_NAMES" \
     --label "airlock.session=$SESSION_ID" \
     --label "airlock.project=$PROJECT_PATH" \

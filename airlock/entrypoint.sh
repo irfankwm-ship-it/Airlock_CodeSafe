@@ -2,8 +2,8 @@
 # entrypoint.sh — Airlock container entrypoint (the image contract)
 #
 # Contract:
-#   1. Credentials mounted at /run/credentials/.credentials.json (read-only)
-#   2. Entrypoint symlinks credentials into /home/claude/.claude/
+#   1. Auth via credentials file OR ANTHROPIC_API_KEY env var
+#   2. If credentials file present, entrypoint symlinks into /home/claude/.claude/
 #   3. Touch /tmp/.key-loaded as readiness signal
 #   4. exec claude --dangerously-skip-permissions with any extra args
 set -euo pipefail
@@ -11,15 +11,22 @@ set -euo pipefail
 CRED_MOUNT="/run/credentials/.credentials.json"
 CRED_TARGET="/home/claude/.claude/.credentials.json"
 
-if [ ! -f "$CRED_MOUNT" ]; then
-    echo "FATAL: credentials not found at $CRED_MOUNT" >&2
-    echo "Ensure the host credentials file is bind-mounted read-only." >&2
+# /home/claude is tmpfs — create dir structure
+mkdir -p /home/claude/.claude
+
+if [ -f "$CRED_MOUNT" ]; then
+    # OAuth credentials file mode
+    ln -sf "$CRED_MOUNT" "$CRED_TARGET"
+    echo "Auth: credentials file"
+elif [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    # API key mode — Claude Code reads ANTHROPIC_API_KEY from env directly
+    echo "Auth: API key"
+else
+    echo "FATAL: no authentication found." >&2
+    echo "  Either mount credentials at $CRED_MOUNT" >&2
+    echo "  or set ANTHROPIC_API_KEY environment variable." >&2
     exit 1
 fi
-
-# /home/claude is tmpfs — create dir structure and symlink credentials in
-mkdir -p /home/claude/.claude
-ln -sf "$CRED_MOUNT" "$CRED_TARGET"
 
 # Copy approved enhancements from read-only mounts into tmpfs .claude/
 # Enhancements are mounted at /opt/enhancements/<name>/ (read-only)
