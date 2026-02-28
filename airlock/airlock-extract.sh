@@ -338,8 +338,9 @@ ssh-keygen -Y sign \
     -n "$SIGN_NAMESPACE" \
     "$DIFF_FILE"
 
-# ssh-keygen creates <file>.sig
-if [ -f "${DIFF_FILE}.sig" ]; then
+# ssh-keygen creates <file>.sig next to the input file
+# If it's already at the expected location, no move needed
+if [ -f "${DIFF_FILE}.sig" ] && [ "$(realpath "${DIFF_FILE}.sig")" != "$(realpath "$SIGNATURE_FILE")" ]; then
     mv "${DIFF_FILE}.sig" "$SIGNATURE_FILE"
 fi
 
