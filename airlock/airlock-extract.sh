@@ -49,6 +49,9 @@ echo "  Staged dir:         $STAGED_DIR"
 echo "════════════════════════════════════════════════════════════════════"
 echo ""
 
+# ── Capture network name early (exited containers lose network info) ──
+NETWORK_NAME=$(docker inspect --format='{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$CONTAINER_NAME" 2>/dev/null | tr ' ' '\n' | grep "^${AIRLOCK_CONTAINER_PREFIX}-net-" | head -1 || true)
+
 # ── Detect container state ────────────────────────────────────────────
 CONTAINER_RUNNING=$(docker inspect --format='{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo "false")
 CONTAINER_PAUSED=$(docker inspect --format='{{.State.Paused}}' "$CONTAINER_NAME" 2>/dev/null || echo "false")
@@ -77,8 +80,8 @@ echo "==> Phase 6A: Capturing audit logs"
 # docker logs works on exited containers
 docker logs "$CONTAINER_NAME" 2>&1 | cat -v > "$SESSION_LOG_DIR/docker-logs.txt" || true
 
-# docker exec only works on running containers
-if [ "$CONTAINER_EXITED" = false ] && [ "$CONTAINER_PAUSED" != "true" ]; then
+# docker exec works on running and paused containers, not exited
+if [ "$CONTAINER_EXITED" = false ]; then
     docker exec "$CONTAINER_NAME" cat /tmp/audit.log 2>/dev/null | cat -v > "$SESSION_LOG_DIR/audit.txt" || true
 else
     echo "  Skipping audit.log capture (container not running)."
@@ -150,7 +153,8 @@ echo ""
 echo "==> Phase 6D: Computing file hashes"
 
 HASH_FILE="$SESSION_LOG_DIR/staged-hashes.txt"
-find "$STAGED_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > "$HASH_FILE"
+: > "$HASH_FILE"
+find "$STAGED_DIR" -type f -print0 | sort -z | xargs -0 --no-run-if-empty sha256sum >> "$HASH_FILE"
 OVERALL_HASH=$(sha256sum "$HASH_FILE" | awk '{print $1}')
 echo "  Overall hash: $OVERALL_HASH"
 
@@ -165,6 +169,13 @@ diff -ruN "$PROJECT_PATH" "$STAGED_DIR" 2>/dev/null | cat -v > "$DIFF_FILE" || t
 
 DIFF_LINES=$(wc -l < "$DIFF_FILE")
 echo "  Diff: $DIFF_LINES lines → $DIFF_FILE"
+if [ "$DIFF_LINES" -eq 0 ]; then
+    echo "  No changes detected. Nothing to extract."
+    if [ "$CONTAINER_EXITED" = false ] && [ "$CONTAINER_PAUSED" != "true" ]; then
+        docker unpause "$CONTAINER_NAME" 2>/dev/null || true
+    fi
+    exit 0
+fi
 if [ "$DIFF_LINES" -gt 500 ]; then
     echo "  WARNING: large diff ($DIFF_LINES lines). Review carefully."
 fi
@@ -351,7 +362,8 @@ echo ""
 echo "==> Phase 7C: TOCTOU hash verification"
 
 HASH_FILE_RECHECK="$SESSION_LOG_DIR/staged-hashes-recheck.txt"
-find "$STAGED_DIR" -type f -print0 | sort -z | xargs -0 sha256sum > "$HASH_FILE_RECHECK"
+: > "$HASH_FILE_RECHECK"
+find "$STAGED_DIR" -type f -print0 | sort -z | xargs -0 --no-run-if-empty sha256sum >> "$HASH_FILE_RECHECK"
 RECHECK_HASH=$(sha256sum "$HASH_FILE_RECHECK" | awk '{print $1}')
 
 if [ "$OVERALL_HASH" != "$RECHECK_HASH" ]; then
@@ -372,15 +384,20 @@ echo "==> Phase 7D: Syncing changes to project"
 SYNCED=0
 
 # Parse diff to find changed/new files, sync only those
-# Diff headers look like: diff -ruN /original/path/file /staged/path/file
+# Diff headers: "diff -ruN <original> <staged>"
+# We match the staged dir prefix to handle paths with spaces
 while IFS= read -r diff_line; do
-    # Extract the staged-side path from "diff -ruN <original> <staged>"
-    STAGED_FILE=$(echo "$diff_line" | awk '{print $4}')
-    if [ -z "$STAGED_FILE" ] || [ ! -f "$STAGED_FILE" ]; then
+    # Extract staged-side path: everything after the staged dir prefix
+    if [[ "$diff_line" =~ $STAGED_DIR/(.+)$ ]]; then
+        REL_PATH="${BASH_REMATCH[1]}"
+        STAGED_FILE="$STAGED_DIR/$REL_PATH"
+    else
+        continue
+    fi
+    if [ ! -f "$STAGED_FILE" ]; then
         continue
     fi
 
-    REL_PATH="${STAGED_FILE#"$STAGED_DIR"/}"
     DEST="$PROJECT_PATH/$REL_PATH"
     DEST_DIR=$(dirname "$DEST")
 
@@ -434,8 +451,7 @@ if [ -n "$WATCHDOG_PID" ] && kill -0 "$WATCHDOG_PID" 2>/dev/null; then
     echo "  Watchdog killed (PID: $WATCHDOG_PID)"
 fi
 
-# Destroy container
-NETWORK_NAME=$(docker inspect --format='{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$CONTAINER_NAME" 2>/dev/null | tr ' ' '\n' | grep "^${AIRLOCK_CONTAINER_PREFIX}-net-" | head -1 || true)
+# Destroy container (NETWORK_NAME captured early, before pause/exit loses it)
 docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
 echo "  Container destroyed."
 
