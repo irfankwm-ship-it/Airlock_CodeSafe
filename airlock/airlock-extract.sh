@@ -49,13 +49,40 @@ echo "  Staged dir:         $STAGED_DIR"
 echo "════════════════════════════════════════════════════════════════════"
 echo ""
 
+# ── Detect container state ────────────────────────────────────────────
+CONTAINER_RUNNING=$(docker inspect --format='{{.State.Running}}' "$CONTAINER_NAME" 2>/dev/null || echo "false")
+CONTAINER_PAUSED=$(docker inspect --format='{{.State.Paused}}' "$CONTAINER_NAME" 2>/dev/null || echo "false")
+CONTAINER_STATUS=$(docker inspect --format='{{.State.Status}}' "$CONTAINER_NAME" 2>/dev/null || echo "unknown")
+
+if [ "$CONTAINER_STATUS" = "exited" ]; then
+    echo "  NOTE: Container already exited. TOCTOU pause not possible,"
+    echo "        but staged files are on the host bind mount and immutable."
+    echo ""
+    CONTAINER_EXITED=true
+elif [ "$CONTAINER_PAUSED" = "true" ]; then
+    echo "  Container already paused."
+    CONTAINER_EXITED=false
+elif [ "$CONTAINER_RUNNING" = "true" ]; then
+    CONTAINER_EXITED=false
+else
+    echo "  Container state: $CONTAINER_STATUS"
+    CONTAINER_EXITED=true
+fi
+
 # ══════════════════════════════════════════════════════════════════════
 # PHASE 6A: Capture audit logs
 # ══════════════════════════════════════════════════════════════════════
 echo "==> Phase 6A: Capturing audit logs"
 
+# docker logs works on exited containers
 docker logs "$CONTAINER_NAME" 2>&1 | cat -v > "$SESSION_LOG_DIR/docker-logs.txt" || true
-docker exec "$CONTAINER_NAME" cat /tmp/audit.log 2>/dev/null | cat -v > "$SESSION_LOG_DIR/audit.txt" || true
+
+# docker exec only works on running containers
+if [ "$CONTAINER_EXITED" = false ] && [ "$CONTAINER_PAUSED" != "true" ]; then
+    docker exec "$CONTAINER_NAME" cat /tmp/audit.log 2>/dev/null | cat -v > "$SESSION_LOG_DIR/audit.txt" || true
+else
+    echo "  Skipping audit.log capture (container not running)."
+fi
 echo "  Logs saved to $SESSION_LOG_DIR"
 
 # ══════════════════════════════════════════════════════════════════════
@@ -63,8 +90,15 @@ echo "  Logs saved to $SESSION_LOG_DIR"
 # ══════════════════════════════════════════════════════════════════════
 echo ""
 echo "==> Phase 6B: Pausing container"
-docker pause "$CONTAINER_NAME"
-echo "  Container paused."
+
+if [ "$CONTAINER_EXITED" = true ]; then
+    echo "  Skipped (container already exited — no process can modify staged files)."
+elif [ "$CONTAINER_PAUSED" = "true" ]; then
+    echo "  Already paused."
+else
+    docker pause "$CONTAINER_NAME"
+    echo "  Container paused."
+fi
 
 # From here we read files from the host-side bind mount (no docker exec on paused container)
 
@@ -98,9 +132,14 @@ fi
 
 if [ "$ABORT" -gt 0 ]; then
     echo ""
-    echo "Extraction aborted due to security checks. Container remains paused."
-    echo "  Unpause: docker unpause $CONTAINER_NAME"
-    echo "  Destroy: docker rm -f $CONTAINER_NAME"
+    echo "Extraction aborted due to security checks."
+    if [ "$CONTAINER_EXITED" = true ]; then
+        echo "  Destroy: docker rm -f $CONTAINER_NAME"
+    else
+        echo "  Container remains paused."
+        echo "  Unpause: docker unpause $CONTAINER_NAME"
+        echo "  Destroy: docker rm -f $CONTAINER_NAME"
+    fi
     exit 1
 fi
 
@@ -265,7 +304,11 @@ read -rp "Have you reviewed the diff? Type 'approve' to sign and sync: " REVIEW_
 
 if [ "$REVIEW_RESPONSE" != "approve" ]; then
     echo "Extraction cancelled by reviewer."
-    echo "  Container remains paused. To resume: docker unpause $CONTAINER_NAME"
+    if [ "$CONTAINER_EXITED" = true ]; then
+        echo "  Destroy: docker rm -f $CONTAINER_NAME"
+    else
+        echo "  Container remains paused. To resume: docker unpause $CONTAINER_NAME"
+    fi
     exit 1
 fi
 
